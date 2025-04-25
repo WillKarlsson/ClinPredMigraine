@@ -1,0 +1,156 @@
+# Install only if needed
+# install.packages("broom")
+# install.packages("pROC")
+# install.packages("rms")
+# install.packages("performance")
+# install.packages("emmeans")
+# install.packages("lmerTest")
+# install.packages("caret")
+# install.packages("vcd")
+# install.packages("gridGraphics")
+# install.packages("gridExtra")
+
+set.seed(100)
+
+# Comparison of baseline demographics and characteristics
+t.test(covariate ~ groups, data = df, paired = FALSE)
+wilcox.test(covariate ~ groups, data = df, paired = FALSE)
+chisq.test(table(df$covariate, df$groups), correct = FALSE)
+fisher.test(table(df$covariate, df$groups))
+
+# Univariate analysis
+m <- glm(outcome ~ covariate, family = "binomial", data = df)
+summary(m)
+round(cbind(exp(coef(m)),exp(confint(m))),2)
+
+# Multivariable analysis
+m <- glm(outcome ~ covariate1 + covariate2 + covariate3, family = "binomial", data = df)
+summary(m)
+round(cbind(exp(coef(m)),exp(confint(m))),2)
+
+# Diagnostic metrics
+library(pROC)
+
+predprob <- predict(m, type="response")
+roc_obj <- roc(df$outcome, predprob)
+auc(roc_obj)
+ci.auc(roc_obj)
+
+rets <- c("threshold",
+          "specificity",
+          "sensitivity",
+          "accuracy",
+          "tn",
+          "tp",
+          "fn",
+          "fp",
+          "npv",
+          "ppv",
+          "youden")
+
+coords <- coords(roc_obj,
+                 input = "threshold",
+                 x= "best", 
+                 best.method = "youden",
+                 ret = rets, 
+                 transpose = FALSE)
+
+optimal_threshold <- coords$threshold
+
+binary_predictions <- ifelse(predprob > optimal_threshold, 1, 0)
+conf_matrix <- table(ModelPrediction = binary_predictions, ClinicalResponse = df$outcome)
+
+TP <- conf_matrix[2, 2]  # True Positives
+TN <- conf_matrix[1, 1]  # True Negatives
+FP <- conf_matrix[2, 1]  # False Positives
+FN <- conf_matrix[1, 2]  # False Negatives
+
+Sensitivity <- TP / (TP + FN)
+Specificity <- TN / (TN + FP)
+YoudenJ <- Sensitivity + Specificity - 1
+PPV_manual <- TP / (TP + FP)
+NPV_manual <- TN / (TN + FN)
+accuracy <- (TP + TN) / (TP + TN + FP + FN)
+
+# C-statistics adjusted for optimism
+library(rms)
+
+m_rms <- lrm(m, data = df, x = TRUE, y = TRUE)
+v <- rms::validate(m_rms, B = 2000, method = "boot", bw = FALSE)
+c_opt_corr_AUC <- round((c_opt_corr <- 0.5 * (v[1, 5] + 1))*100,1) # c-statistics
+
+# Calibration plot
+cal <- calibrate(m_rms, B = 2000)
+plot(cal,
+     xlab = "Predicted probability of response",
+     ylab = "Actual probability",
+     conf.int = TRUE)
+
+# Hosmer-Lemeshow
+library(performance)
+
+hosmer <- performance_hosmer(m, n_bins = 10)
+
+# Linear mixed-effects regression model
+library(broom)
+library(emmeans)
+library(lmerTest)
+
+lm <- lmerTest::lmer(MMD_abs_change ~ timepoint * responsegroup + (1 | participant_id), data = df)
+summary(lm)
+
+em <- emmeans(lm, list(pairwise ~ timepoint * responsegroup), 
+              adjust = "none",
+              type = "response",
+              rg.limit = 400000,
+              lmerTest.limit = 3500,
+              pbkrtest.limit = 3500)
+
+emm <- em$`pairwise differences of timepoint, responsegroup`
+
+res_mod <- as.data.frame(tidy(emm))
+res_mod2 <- as.data.frame(confint(emm))
+print(res_mod, max.print = 1000)
+print(res_mod2, max.print = 1000)
+
+# McNemar's test
+library(caret)
+
+confusionMatrix(as.factor(df$raw_responder_50MMD_W12), # Week 12 vs Week 24
+                as.factor(df$raw_responder_50MMD_W24))
+
+confusionMatrix(as.factor(df$raw_responder_50MMD_W16), # Week 16 vs Week 24
+                as.factor(df$raw_responder_50MMD_W24))
+
+confusionMatrix(as.factor(df$raw_responder_50MMD_W20), # Week 20 vs Week 24
+                as.factor(df$raw_responder_50MMD_W24))
+
+# Spinograms
+library(vcd)
+library(gridGraphics)
+library(gridExtra)
+
+m1 <- grid.grabExpr(
+  vcd::spine(table_CM_responsegrade,
+             gp=gpar(fill=c("#1f78b4","#a6cee3","#b2df8a")),
+             ylab="Response (MMDs)",
+             main="Diagnosis",
+             newpage = FALSE))
+
+
+m2 <- grid.grabExpr(
+  vcd::spine(table_dailyheadache_responsegrade,
+             gp=gpar(fill=c("#1f78b4", "#a6cee3","#b2df8a")),
+             main="Daily headache",
+             newpage = FALSE))
+
+m3 <- grid.grabExpr(
+  vcd::spine(table_multipleprevmeds_responsegrade,
+             gp=gpar(fill=c("#1f78b4", "#a6cee3","#b2df8a")),
+             main="Preventive medication failures",
+             newpage = FALSE))
+
+fig3 <- grid.arrange(m1,m2,m3, nrow = 1, ncol = 3)
+  
+# Multiple comparison adjustment
+p.adjust(c(pvalue1, pvalue2, pvalue3), method = "fdr")
